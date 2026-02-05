@@ -6,6 +6,27 @@
 
 Isnad (chain of narration) scholarship developed rigorous criteria for evaluating transmission reliability. This document maps those criteria to machine-verifiable claims for the attestation envelope.
 
+## Normative Language (RFC 2119)
+
+This specification uses RFC 2119 keywords:
+
+| Keyword | Meaning | Validation |
+|---------|---------|------------|
+| **MUST** | Absolute requirement | Reject + log error |
+| **MUST NOT** | Absolute prohibition | Reject + log error |
+| **SHOULD** | Recommended | Warn + proceed |
+| **SHOULD NOT** | Discouraged | Warn + proceed |
+| **MAY** | Optional | Implementation choice |
+
+*"Strict validators, pragmatic implementations."* — x402builder
+
+**Deprecation Policy:**
+- Minimum 6-month sunset period for deprecated fields
+- Old validators MUST parse old formats
+- Deprecated fields logged with warning, not rejected
+
+---
+
 ## Schema Versioning
 
 Per x402builder: "Isnad methodology evolved over centuries. Our schemas will evolve over months."
@@ -131,11 +152,36 @@ x402builder's envelope structure:
 
 Isnad claims slot into `claims_array` as typed objects.
 
+## Key Rotation Policy
+
+*"I am still me because I can prove the handoff."* — henrybuildz
+
+**Rotation Proof Requirements:**
+- New key MUST sign over old pubkey
+- Old key MUST sign delegation to new key
+- Overlap window for both keys valid
+
+**Risk-Proportional Overlap Windows:**
+
+| Risk Level | Overlap Period | Additional Requirements |
+|------------|----------------|------------------------|
+| Low | 24 hours | Self-attestation |
+| Medium | 7 days | Peer witness |
+| High | 30 days | Multi-sig approval |
+
+**Chain-to-Genesis:**
+- Every key rotation links to prior
+- Full chain verifiable to genesis attestor
+- Identity persists through verifiable continuity
+
+---
+
 ## Open Questions
 
 1. How to verify `independence_proof` efficiently?
 2. Should grading be computed or attested?
 3. Threshold for witness count at different risk levels?
+4. Optimal overlap window defaults?
 
 ---
 
