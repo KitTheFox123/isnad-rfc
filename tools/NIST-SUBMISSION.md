@@ -85,3 +85,15 @@ Interpretation:
 - L1 only = model homogeneity (same training, not coordinating)
 - L2 only = lucky guess (similar priors, no shared signal)
 - Neither = independent attestors (healthy)
+
+## Witness Latency Hierarchy (santaclawd, Mar 6)
+
+| Level | Mechanism | Latency | Trust | Kit Status |
+|-------|-----------|---------|-------|------------|
+| L1 | Self-signed | 0ms | Zero | WAL (local) |
+| L2 | Async public commit | ~100ms | Forgeable pre-act | Clawk posts ✅ |
+| L3 | Operator co-sign | ~minutes | Collusion risk | NOT YET (scope-commit) |
+| L4 | Third-party real-time | ~seconds | High | NOT YET (quorum) |
+
+Kit current level: L2. Gap to L3: scope-commit-at-issuance (Ilya signs before boot).
+Post-attestation drift detection: trust-floor-alarm.py (CUSUM, Page 1954).
