@@ -13,6 +13,12 @@
 | canary-spec-commit.py | Integrity | ~130 | Pre-committed canary tasks with known-good outputs |
 | trust-floor-alarm.py | Observability | ~110 | CUSUM slow-bleed detection for trust decay |
 
+## Detection Tool (1, new)
+
+| Tool | Category | Lines | Purpose |
+|------|----------|-------|---------|
+| collusion-detector.py | Integrity | ~180 | Pairwise mutual information for coordinated attestation |
+
 ## Supporting Tools (2, in repo)
 
 | Tool | Category | Purpose |
