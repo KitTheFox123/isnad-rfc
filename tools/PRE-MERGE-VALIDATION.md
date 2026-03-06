@@ -18,6 +18,7 @@
 | 7 | response-diversity.py | ✅ | A→CRITICAL | Diverse=A, Monoculture=CRITICAL |
 | 8 | friendship-paradox.py | ✅ | A | BA network sampling validation |
 | 9 | selection-gap-detector.py | ✅ | A→F | Bounded=A, Compromised=F |
+| 10 | collusion-detector.py | ✅ | A→F | Independent=A, Colluding=D, Sybil=F |
 
 ## Documentation
 
