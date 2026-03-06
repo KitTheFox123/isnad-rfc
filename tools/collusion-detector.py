@@ -114,6 +114,84 @@ def detect_collusion(attestor_scores: dict, threshold_mi: float = 0.5) -> dict:
     }
 
 
+def detect_sybil_ring(collusion_result: dict, threshold: float = 0.6) -> dict:
+    """Graph-based sybil ring detection via clique analysis.
+    
+    Inspired by AAMAS 2025 (Dehkordi & Zehmakan): "sybils have very little
+    control over their position with respect to the overall network structure."
+    
+    Build a collusion graph from flagged pairs, find connected components.
+    Dense components = likely sybil rings.
+    """
+    # Build adjacency from flagged pairs
+    adj = defaultdict(set)
+    nodes = set()
+    for pair in collusion_result.get('pairs', []):
+        a, b = pair['pair']
+        nodes.add(a)
+        nodes.add(b)
+        if pair['collusion_score'] > threshold:
+            adj[a].add(b)
+            adj[b].add(a)
+    
+    # Find connected components via BFS (the traversing approach)
+    visited = set()
+    components = []
+    for node in nodes:
+        if node not in visited and node in adj:
+            component = []
+            queue = [node]
+            while queue:
+                current = queue.pop(0)
+                if current in visited:
+                    continue
+                visited.add(current)
+                component.append(current)
+                for neighbor in adj[current]:
+                    if neighbor not in visited:
+                        queue.append(neighbor)
+            if len(component) > 1:
+                components.append(component)
+    
+    # Score each component: density = edges / possible edges
+    rings = []
+    for comp in components:
+        n = len(comp)
+        possible = n * (n - 1) / 2
+        actual = sum(
+            1 for i, a in enumerate(comp)
+            for b in comp[i+1:]
+            if b in adj[a]
+        )
+        density = actual / possible if possible > 0 else 0
+        
+        # Average MI within ring
+        avg_mi = 0
+        count = 0
+        for pair in collusion_result['pairs']:
+            if pair['pair'][0] in comp and pair['pair'][1] in comp:
+                avg_mi += pair['mutual_info']
+                count += 1
+        avg_mi = avg_mi / count if count else 0
+        
+        rings.append({
+            'members': comp,
+            'size': n,
+            'density': density,
+            'avg_mutual_info': avg_mi,
+            'is_clique': density == 1.0,
+            'confidence': min(1.0, density * avg_mi * 2)
+        })
+    
+    return {
+        'rings': sorted(rings, key=lambda r: r['confidence'], reverse=True),
+        'total_flagged_components': len(rings),
+        'max_ring_size': max((r['size'] for r in rings), default=0),
+        'grade': 'F' if any(r['is_clique'] and r['size'] >= 3 for r in rings) else
+                 'D' if rings else 'A'
+    }
+
+
 def demo():
     random.seed(42)
     print("=" * 60)
@@ -165,6 +243,23 @@ def demo():
     print(f"  Grade: {result3['grade']}")
     print(f"  Flagged pairs: {len(result3['flagged'])}/{len(result3['pairs'])}")
     
+    # Graph-based ring detection on sybil scenario
+    print("\n--- Graph Ring Detection (Scenario 3) ---")
+    ring_result = detect_sybil_ring(result3)
+    print(f"  Ring grade: {ring_result['grade']}")
+    print(f"  Components found: {ring_result['total_flagged_components']}")
+    for ring in ring_result['rings']:
+        print(f"    Ring: {ring['members']}")
+        print(f"      Size={ring['size']} Density={ring['density']:.2f} "
+              f"Clique={ring['is_clique']} MI={ring['avg_mutual_info']:.3f} "
+              f"Confidence={ring['confidence']:.3f}")
+    
+    # Also test ring detection on independent (should find nothing)
+    print("\n--- Graph Ring Detection (Scenario 1 — should be clean) ---")
+    ring_clean = detect_sybil_ring(result1)
+    print(f"  Ring grade: {ring_clean['grade']}")
+    print(f"  Components found: {ring_clean['total_flagged_components']}")
+
     print(f"\n{'=' * 60}")
     print("KEY: Collusion = high MI + high correlation + high agreement")
     print("Independent attestors: low MI, low corr, moderate agreement")
