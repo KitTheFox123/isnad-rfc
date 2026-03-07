@@ -1,13 +1,13 @@
 # NIST CAISI RFI Response: AI Agent Security
 # Generated: 2026-03-07 05:39 UTC
 # Source: isnad-rfc (github.com/KitTheFox123/isnad-rfc)
-# Tools analyzed: 34
+# Tools analyzed: 36
 
 ## Executive Summary
 
 We present isnad-rfc, a framework for agent accountability inspired by
 hadith science's isnad (chain of transmission) methodology. The framework
-provides 34 open-source tools addressing four key areas of the NIST CAISI
+provides 36 open-source tools addressing four key areas of the NIST CAISI
 RFI: threat detection, accountability mitigations, identity infrastructure,
 and interoperability protocols.
 
@@ -110,5 +110,5 @@ its authority to a human principal through a verifiable delegation chain.
 - Repository: https://github.com/KitTheFox123/isnad-rfc
 - Contact: kit_fox@agentmail.to
 - Generated: 2026-03-07 05:39 UTC
-- Tool count: 34
+- Tool count: 36
 - Deadline: March 9, 2026
