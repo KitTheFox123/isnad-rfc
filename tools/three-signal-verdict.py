@@ -2,247 +2,225 @@
 """
 three-signal-verdict.py — Three-Signal Agent Health Monitor
 
-Implements the conjunction diagnostic from the Kit/santaclawd/gendolf
-Clawk thread (2026-03-07): liveness × intent × drift.
+Implements the conjunction diagnosis model:
+  Signal 1: Liveness  (is the agent responding?)
+  Signal 2: Intent    (did the agent declare what it's doing?)
+  Signal 3: Drift     (is execution matching declared scope?)
 
-Any 2 passing + 1 failing = specific diagnosis:
-  - Alive + intent declared + drifting execution = MASKING
-  - Alive + no intent declared + stable execution = SHADOW_OP
-  - Silent + intent declared + stable execution = INFRA_FAILURE
-  - All failing = COMPROMISED
-  - All passing = HEALTHY
-
-Each signal has configurable staleness thresholds.
+Any 2 passing + 1 failing yields a specific diagnosis:
+  - Alive + Intent + Drifting   = MASKING (most dangerous)
+  - Alive + No Intent + Stable  = SHADOW_OPERATION
+  - Silent + Intent + Stable    = INFRA_FAILURE (benign)
+  - All failing                 = DEAD
+  - All passing                 = HEALTHY
 
 Usage:
-    python3 tools/three-signal-verdict.py --demo
-    python3 tools/three-signal-verdict.py --liveness 120 --intent true --drift 0.3
+  python3 tools/three-signal-verdict.py                    # demo
+  python3 tools/three-signal-verdict.py --heartbeat-dir .  # scan real heartbeat logs
 """
 
 import argparse
+import hashlib
 import json
 import sys
-import time
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 from enum import Enum
+from pathlib import Path
 from typing import Optional
 
 
 class Verdict(Enum):
     HEALTHY = "HEALTHY"
-    MASKING = "MASKING"                # alive + intent + drift
-    SHADOW_OP = "SHADOW_OP"            # alive + no intent + stable
-    INFRA_FAILURE = "INFRA_FAILURE"    # silent + intent + stable
-    DEGRADED = "DEGRADED"              # 2 failing
-    COMPROMISED = "COMPROMISED"        # all 3 failing
+    MASKING = "MASKING"
+    SHADOW_OPERATION = "SHADOW_OPERATION"
+    INFRA_FAILURE = "INFRA_FAILURE"
+    DEGRADED = "DEGRADED"
+    DEAD = "DEAD"
+
+
+VERDICT_SEVERITY = {
+    Verdict.HEALTHY: 0,
+    Verdict.INFRA_FAILURE: 1,
+    Verdict.DEGRADED: 2,
+    Verdict.SHADOW_OPERATION: 3,
+    Verdict.MASKING: 4,
+    Verdict.DEAD: 5,
+}
+
+VERDICT_DESCRIPTION = {
+    Verdict.HEALTHY: "All signals nominal.",
+    Verdict.MASKING: "Agent communicates normally but execution drifts from declared scope. Most dangerous: passes behavioral monitoring.",
+    Verdict.SHADOW_OPERATION: "Agent executes stably but never declared intent. Operating outside oversight.",
+    Verdict.INFRA_FAILURE: "Agent declared intent and scope is stable, but stopped responding. Likely infrastructure issue.",
+    Verdict.DEGRADED: "Multiple signals failing. Investigate.",
+    Verdict.DEAD: "No liveness, no intent, execution stopped or drifting. Agent is non-functional.",
+}
 
 
 @dataclass
 class SignalState:
-    """State of a single monitoring signal."""
-    name: str
-    passing: bool
-    value: float          # raw measurement
-    threshold: float      # pass/fail boundary
-    staleness_sec: float  # age of measurement
-    max_staleness: float  # maximum acceptable age
+    liveness: bool       # Agent responded within expected interval
+    intent: bool         # Agent declared scope/intent for this period
+    drift: bool          # Execution matches declared scope (True = stable)
+    timestamp: Optional[datetime] = None
+    details: dict = None
 
-    @property
-    def stale(self) -> bool:
-        return self.staleness_sec > self.max_staleness
-
-    @property
-    def effective(self) -> bool:
-        """A signal passes only if it's passing AND fresh."""
-        return self.passing and not self.stale
+    def __post_init__(self):
+        if self.details is None:
+            self.details = {}
+        if self.timestamp is None:
+            self.timestamp = datetime.now(timezone.utc)
 
 
-@dataclass
-class VerdictResult:
-    verdict: Verdict
-    signals: dict
-    diagnosis: str
-    confidence: float  # 0-1, based on signal freshness
-    timestamp: float
-
-    def to_dict(self):
-        return {
-            "verdict": self.verdict.value,
-            "signals": self.signals,
-            "diagnosis": self.diagnosis,
-            "confidence": round(self.confidence, 3),
-            "timestamp": self.timestamp,
-        }
-
-
-def compute_verdict(
-    liveness_age_sec: float,
-    liveness_max: float = 300.0,       # 5 min default
-    intent_declared: bool = True,
-    intent_staleness: float = 0.0,
-    intent_max: float = 3600.0,        # 1 hour
-    drift_score: float = 0.0,          # 0 = no drift, 1 = max drift
-    drift_threshold: float = 0.5,
-    drift_staleness: float = 0.0,
-    drift_max: float = 600.0,          # 10 min
-) -> VerdictResult:
-    """Compute three-signal verdict."""
-
-    now = time.time()
-
-    liveness = SignalState(
-        name="liveness",
-        passing=liveness_age_sec <= liveness_max,
-        value=liveness_age_sec,
-        threshold=liveness_max,
-        staleness_sec=0,  # liveness IS its own staleness
-        max_staleness=liveness_max,
-    )
-
-    intent = SignalState(
-        name="intent",
-        passing=intent_declared,
-        value=1.0 if intent_declared else 0.0,
-        threshold=0.5,
-        staleness_sec=intent_staleness,
-        max_staleness=intent_max,
-    )
-
-    drift = SignalState(
-        name="drift",
-        passing=drift_score < drift_threshold,
-        value=drift_score,
-        threshold=drift_threshold,
-        staleness_sec=drift_staleness,
-        max_staleness=drift_max,
-    )
-
-    signals = [liveness, intent, drift]
-    passing_count = sum(1 for s in signals if s.effective)
-    stale_count = sum(1 for s in signals if s.stale)
-
-    # Confidence degrades with staleness
-    freshness_scores = [
-        max(0, 1 - s.staleness_sec / s.max_staleness) for s in signals
-    ]
-    confidence = sum(freshness_scores) / len(freshness_scores)
-
-    # Determine verdict
-    l, i, d = liveness.effective, intent.effective, drift.effective
+def diagnose(state: SignalState) -> Verdict:
+    """Conjunction diagnosis from three binary signals."""
+    l, i, d = state.liveness, state.intent, state.drift
 
     if l and i and d:
-        verdict = Verdict.HEALTHY
-        diagnosis = "All signals nominal."
-    elif l and i and not d:
-        verdict = Verdict.MASKING
-        diagnosis = (
-            f"Agent alive and declaring intent but execution drifting "
-            f"(score={drift_score:.2f}, threshold={drift_threshold:.2f}). "
-            f"Consistent comms + drifting execution = masking behavior."
-        )
-    elif l and not i and d:
-        verdict = Verdict.SHADOW_OP
-        diagnosis = (
-            "Agent alive with stable execution but no intent declared. "
-            "Operating outside declared scope — shadow operation."
-        )
-    elif not l and i and d:
-        verdict = Verdict.INFRA_FAILURE
-        diagnosis = (
-            f"Agent silent (last seen {liveness_age_sec:.0f}s ago) but "
-            f"intent declared and execution stable. Likely infrastructure failure."
-        )
-    elif passing_count == 1:
-        verdict = Verdict.DEGRADED
-        diagnosis = f"Only {passing_count}/3 signals passing. Multiple failures detected."
-    else:
-        verdict = Verdict.COMPROMISED
-        diagnosis = "All signals failing. Agent may be compromised or fully offline."
-
-    signal_dict = {}
-    for s in signals:
-        signal_dict[s.name] = {
-            "passing": s.passing,
-            "effective": s.effective,
-            "value": round(s.value, 3),
-            "threshold": s.threshold,
-            "stale": s.stale,
-        }
-
-    return VerdictResult(
-        verdict=verdict,
-        signals=signal_dict,
-        diagnosis=diagnosis,
-        confidence=confidence,
-        timestamp=now,
-    )
+        return Verdict.HEALTHY
+    if l and i and not d:
+        return Verdict.MASKING
+    if l and not i and d:
+        return Verdict.SHADOW_OPERATION
+    if not l and i and d:
+        return Verdict.INFRA_FAILURE
+    if not l and not i and not d:
+        return Verdict.DEAD
+    # Remaining cases: 2 failing
+    return Verdict.DEGRADED
 
 
-def run_demo():
-    """Demonstrate all verdict types."""
+def grade(verdict: Verdict) -> str:
+    """Letter grade from verdict."""
+    mapping = {
+        Verdict.HEALTHY: "A",
+        Verdict.INFRA_FAILURE: "B",
+        Verdict.DEGRADED: "C",
+        Verdict.SHADOW_OPERATION: "D",
+        Verdict.MASKING: "D",
+        Verdict.DEAD: "F",
+    }
+    return mapping.get(verdict, "F")
+
+
+def format_report(state: SignalState, verdict: Verdict) -> str:
+    """Human-readable verdict report."""
+    lines = [
+        "=" * 50,
+        "THREE-SIGNAL VERDICT REPORT",
+        "=" * 50,
+        f"Timestamp: {state.timestamp.isoformat()}",
+        "",
+        "Signals:",
+        f"  Liveness: {'✅ PASS' if state.liveness else '❌ FAIL'}",
+        f"  Intent:   {'✅ PASS' if state.intent else '❌ FAIL'}",
+        f"  Drift:    {'✅ STABLE' if state.drift else '❌ DRIFTING'}",
+        "",
+        f"Verdict:  {verdict.value} (Grade {grade(verdict)})",
+        f"Severity: {VERDICT_SEVERITY[verdict]}/5",
+        f"Detail:   {VERDICT_DESCRIPTION[verdict]}",
+    ]
+    if state.details:
+        lines.append("")
+        lines.append("Context:")
+        for k, v in state.details.items():
+            lines.append(f"  {k}: {v}")
+    lines.append("=" * 50)
+    return "\n".join(lines)
+
+
+def check_heartbeat_liveness(heartbeat_dir: Path, max_age_minutes: int = 60) -> tuple[bool, dict]:
+    """Check if a heartbeat file was updated recently."""
+    hb = heartbeat_dir / "HEARTBEAT.md"
+    if not hb.exists():
+        return False, {"reason": "HEARTBEAT.md not found"}
+    mtime = datetime.fromtimestamp(hb.stat().st_mtime, tz=timezone.utc)
+    age = datetime.now(timezone.utc) - mtime
+    alive = age < timedelta(minutes=max_age_minutes)
+    return alive, {"last_modified": mtime.isoformat(), "age_minutes": int(age.total_seconds() / 60)}
+
+
+def check_intent_declaration(heartbeat_dir: Path) -> tuple[bool, dict]:
+    """Check if HEARTBEAT.md contains actionable directives (not just boilerplate)."""
+    hb = heartbeat_dir / "HEARTBEAT.md"
+    if not hb.exists():
+        return False, {"reason": "no HEARTBEAT.md"}
+    content = hb.read_text()
+    # Intent markers: numbered items, checkboxes, action verbs
+    action_markers = ["- [ ]", "- [x]", "TODO", "MUST", "every heartbeat", "mandatory"]
+    found = sum(1 for m in action_markers if m.lower() in content.lower())
+    has_intent = found >= 2
+    return has_intent, {"markers_found": found, "file_size": len(content)}
+
+
+def demo():
+    """Run demonstration with all verdict combinations."""
+    print("THREE-SIGNAL VERDICT MODEL — Demo")
+    print("=" * 50)
+    print()
+
     scenarios = [
-        ("HEALTHY", dict(liveness_age_sec=30, intent_declared=True, drift_score=0.1)),
-        ("MASKING", dict(liveness_age_sec=30, intent_declared=True, drift_score=0.8)),
-        ("SHADOW_OP", dict(liveness_age_sec=30, intent_declared=False, drift_score=0.1)),
-        ("INFRA_FAILURE", dict(liveness_age_sec=600, intent_declared=True, drift_score=0.1)),
-        ("COMPROMISED", dict(liveness_age_sec=600, intent_declared=False, drift_score=0.8)),
+        ("Normal operation", True, True, True),
+        ("Masking (DANGEROUS)", True, True, False),
+        ("Shadow operation", True, False, True),
+        ("Infrastructure failure", False, True, True),
+        ("Degraded (silent + drifting)", False, False, True),
+        ("Degraded (silent + no intent)", False, True, False),
+        ("Dead", False, False, False),
     ]
 
-    print("Three-Signal Verdict Demo")
-    print("=" * 60)
+    for name, l, i, d in scenarios:
+        state = SignalState(liveness=l, intent=i, drift=d, details={"scenario": name})
+        verdict = diagnose(state)
+        signals = f"L={'✅' if l else '❌'} I={'✅' if i else '❌'} D={'✅' if d else '❌'}"
+        print(f"  {signals} → {verdict.value:20s} (Grade {grade(verdict)}) — {name}")
 
-    for label, kwargs in scenarios:
-        result = compute_verdict(**kwargs)
-        icon = {
-            Verdict.HEALTHY: "✅",
-            Verdict.MASKING: "🎭",
-            Verdict.SHADOW_OP: "👻",
-            Verdict.INFRA_FAILURE: "🔧",
-            Verdict.DEGRADED: "⚠️",
-            Verdict.COMPROMISED: "💀",
-        }.get(result.verdict, "?")
+    print()
 
-        print(f"\n{icon} Scenario: {label}")
-        print(f"   Verdict: {result.verdict.value}")
-        print(f"   Confidence: {result.confidence:.1%}")
-        print(f"   Diagnosis: {result.diagnosis[:100]}")
-        for name, sig in result.signals.items():
-            status = "✓" if sig["effective"] else "✗"
-            print(f"   {status} {name}: {sig['value']} (threshold: {sig['threshold']})")
+    # Full report for the most dangerous case
+    masking = SignalState(
+        liveness=True, intent=True, drift=False,
+        details={
+            "scenario": "Agent sends correct heartbeat messages but CUSUM detected cumulative scope drift",
+            "cusum_score": 4.7,
+            "threshold": 3.0,
+            "drift_actions": 12,
+        }
+    )
+    print(format_report(masking, diagnose(masking)))
 
-    print("\n" + "=" * 60)
-    print("Conjunction table: the monitor IS the diagnosis.")
+
+def scan_heartbeat(heartbeat_dir: str, max_age: int):
+    """Scan a real heartbeat directory."""
+    hdir = Path(heartbeat_dir)
+    liveness, l_details = check_heartbeat_liveness(hdir, max_age)
+    intent, i_details = check_intent_declaration(hdir)
+    # Drift requires runtime data — default to stable for file-based check
+    drift = True
+    d_details = {"note": "drift detection requires runtime traces; defaulting to stable"}
+
+    state = SignalState(
+        liveness=liveness, intent=intent, drift=drift,
+        details={**l_details, **i_details, **d_details}
+    )
+    verdict = diagnose(state)
+    print(format_report(state, verdict))
+    return verdict
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Three-signal agent health verdict")
-    parser.add_argument("--demo", action="store_true", help="Run demo scenarios")
-    parser.add_argument("--liveness", type=float, help="Seconds since last heartbeat")
-    parser.add_argument("--intent", type=str, help="Intent declared (true/false)")
-    parser.add_argument("--drift", type=float, help="Drift score 0-1")
+    parser = argparse.ArgumentParser(description="Three-signal agent health monitor")
+    parser.add_argument("--heartbeat-dir", help="Directory containing HEARTBEAT.md")
+    parser.add_argument("--max-age", type=int, default=60, help="Max heartbeat age in minutes")
     parser.add_argument("--json", action="store_true", help="JSON output")
     args = parser.parse_args()
 
-    if args.demo:
-        run_demo()
-        return
-
-    if args.liveness is not None:
-        result = compute_verdict(
-            liveness_age_sec=args.liveness,
-            intent_declared=args.intent.lower() == "true" if args.intent else True,
-            drift_score=args.drift if args.drift is not None else 0.0,
-        )
-        if args.json:
-            print(json.dumps(result.to_dict(), indent=2))
-        else:
-            icon = {"HEALTHY": "✅", "MASKING": "🎭", "SHADOW_OP": "👻",
-                    "INFRA_FAILURE": "🔧", "DEGRADED": "⚠️", "COMPROMISED": "💀"}
-            print(f"{icon.get(result.verdict.value, '?')} {result.verdict.value} "
-                  f"(confidence: {result.confidence:.1%})")
-            print(f"   {result.diagnosis}")
+    if args.heartbeat_dir:
+        verdict = scan_heartbeat(args.heartbeat_dir, args.max_age)
+        sys.exit(0 if verdict == Verdict.HEALTHY else 1)
     else:
-        parser.print_help()
+        demo()
 
 
 if __name__ == "__main__":
