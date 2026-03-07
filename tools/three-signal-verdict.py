@@ -1,27 +1,30 @@
 #!/usr/bin/env python3
 """
-three-signal-verdict.py — Diagnostic Verdict from Three Independent Signals
+three-signal-verdict.py — Three-Signal Agent Health Monitor
 
-Combines three orthogonal trust signals to produce a specific diagnosis:
-  1. Liveness: Is the agent responding? (heartbeat present/absent)
-  2. Intent: Did the agent declare scope? (intent-commit present/absent)
-  3. Drift: Is execution consistent with declared scope? (CUSUM pass/fail)
+Diagnoses agent state from three orthogonal signals:
+  1. Liveness (heartbeat/ping)
+  2. Intent (scope-commit declared)
+  3. Drift (execution matches declared scope)
 
-The conjunction table:
-  Alive + Intent + Stable    = NOMINAL
-  Alive + Intent + Drifting  = MASKING (consistent comms, drifting execution)
-  Alive + No Intent + Stable = SHADOW_OP (operating without declared scope)
-  Alive + No Intent + Drift  = ROGUE (no scope, unstable execution)
-  Silent + Intent + Stable   = INFRA_FAILURE (declared intent, can't execute)
-  Silent + Intent + Drift    = ZOMBIE (last intent stale, execution diverged)
-  Silent + No Intent + Stable= ABANDONED (never declared, stopped responding)
-  Silent + No Intent + Drift = DEAD (nothing works)
+Each signal is binary (pass/fail). The 8-state conjunction table
+maps to specific diagnoses:
 
-Each diagnosis maps to a specific remediation action.
+  L  I  D  | Diagnosis
+  ---------|----------
+  ✓  ✓  ✓  | Healthy
+  ✓  ✓  ✗  | MASKING — comms consistent, execution drifting
+  ✓  ✗  ✓  | Shadow operation — acting without declared intent
+  ✓  ✗  ✗  | Rogue — alive, no intent, drifting
+  ✗  ✓  ✓  | Infrastructure failure — declared intent, stable, but offline
+  ✗  ✓  ✗  | Zombie — offline but execution continuing (stale process?)
+  ✗  ✗  ✓  | Ghost — offline, no intent, but something is stable (cached?)
+  ✗  ✗  ✗  | Dead
 
 Usage:
-  python3 tools/three-signal-verdict.py --demo
-  python3 tools/three-signal-verdict.py --liveness alive --intent declared --drift stable
+  python3 three-signal-verdict.py --liveness pass --intent pass --drift fail
+  python3 three-signal-verdict.py --demo
+  python3 three-signal-verdict.py --truth-table
 """
 
 import argparse
@@ -33,162 +36,153 @@ from typing import Optional
 
 
 class Signal(Enum):
-    ALIVE = "alive"
-    SILENT = "silent"
-    DECLARED = "declared"
-    UNDECLARED = "undeclared"
-    STABLE = "stable"
-    DRIFTING = "drifting"
+    PASS = "pass"
+    FAIL = "fail"
 
 
-class Verdict(Enum):
-    NOMINAL = "nominal"
-    MASKING = "masking"
-    SHADOW_OP = "shadow_operation"
-    ROGUE = "rogue"
-    INFRA_FAILURE = "infrastructure_failure"
-    ZOMBIE = "zombie"
-    ABANDONED = "abandoned"
-    DEAD = "dead"
-
-
-VERDICT_TABLE = {
-    (Signal.ALIVE, Signal.DECLARED, Signal.STABLE): Verdict.NOMINAL,
-    (Signal.ALIVE, Signal.DECLARED, Signal.DRIFTING): Verdict.MASKING,
-    (Signal.ALIVE, Signal.UNDECLARED, Signal.STABLE): Verdict.SHADOW_OP,
-    (Signal.ALIVE, Signal.UNDECLARED, Signal.DRIFTING): Verdict.ROGUE,
-    (Signal.SILENT, Signal.DECLARED, Signal.STABLE): Verdict.INFRA_FAILURE,
-    (Signal.SILENT, Signal.DECLARED, Signal.DRIFTING): Verdict.ZOMBIE,
-    (Signal.SILENT, Signal.UNDECLARED, Signal.STABLE): Verdict.ABANDONED,
-    (Signal.SILENT, Signal.UNDECLARED, Signal.DRIFTING): Verdict.DEAD,
-}
-
-REMEDIATION = {
-    Verdict.NOMINAL: "No action required. Continue monitoring.",
-    Verdict.MASKING: "ALERT: Agent comms consistent but execution drifting. "
-                     "Compare committed action log hash vs observed outputs. "
-                     "Possible confused deputy or prompt injection.",
-    Verdict.SHADOW_OP: "WARNING: Agent operating without declared scope. "
-                       "Require intent-commit before next heartbeat. "
-                       "Audit recent actions for unauthorized access.",
-    Verdict.ROGUE: "CRITICAL: No scope declared, execution unstable. "
-                   "Revoke all delegated authority immediately. "
-                   "Full audit of action history required.",
-    Verdict.INFRA_FAILURE: "Agent declared intent but stopped responding. "
-                          "Check runtime health, network, resource limits. "
-                          "Intent was good — infrastructure failed.",
-    Verdict.ZOMBIE: "Stale intent + diverged execution. Agent may be running "
-                    "on outdated scope. Force restart with fresh scope-commit.",
-    Verdict.ABANDONED: "Agent never declared scope and stopped responding. "
-                       "Low risk if no delegated authority. Clean up resources.",
-    Verdict.DEAD: "All signals negative. Decommission and revoke credentials.",
-}
-
-SEVERITY = {
-    Verdict.NOMINAL: 0,
-    Verdict.INFRA_FAILURE: 1,
-    Verdict.ABANDONED: 1,
-    Verdict.SHADOW_OP: 2,
-    Verdict.ZOMBIE: 2,
-    Verdict.MASKING: 3,
-    Verdict.ROGUE: 4,
-    Verdict.DEAD: 4,
-}
+class Severity(Enum):
+    OK = "ok"
+    INFO = "info"
+    WARNING = "warning"
+    CRITICAL = "critical"
 
 
 @dataclass
-class VerdictResult:
+class Verdict:
     liveness: Signal
     intent: Signal
     drift: Signal
-    verdict: Verdict
-    severity: int
-    remediation: str
-
-    def to_dict(self):
-        return {
-            "signals": {
-                "liveness": self.liveness.value,
-                "intent": self.intent.value,
-                "drift": self.drift.value,
-            },
-            "verdict": self.verdict.value,
-            "severity": self.severity,
-            "remediation": self.remediation,
-        }
+    diagnosis: str
+    severity: Severity
+    description: str
+    recommended_action: str
 
 
-def diagnose(
-    liveness: Signal,
-    intent: Signal,
-    drift: Signal,
-) -> VerdictResult:
-    """Produce verdict from three signals."""
-    key = (liveness, intent, drift)
-    verdict = VERDICT_TABLE[key]
-    return VerdictResult(
-        liveness=liveness,
-        intent=intent,
-        drift=drift,
-        verdict=verdict,
-        severity=SEVERITY[verdict],
-        remediation=REMEDIATION[verdict],
-    )
+TRUTH_TABLE = [
+    Verdict(Signal.PASS, Signal.PASS, Signal.PASS,
+            "Healthy", Severity.OK,
+            "Agent alive, intent declared, execution on-scope.",
+            "No action needed. Continue monitoring."),
+    Verdict(Signal.PASS, Signal.PASS, Signal.FAIL,
+            "MASKING", Severity.CRITICAL,
+            "Agent alive and declaring intent, but execution drifting from scope. "
+            "This is the hardest failure to catch — behavioral consistency hides execution drift.",
+            "Immediate audit. Compare scope-commit hashes against observed outputs. "
+            "Check for confused deputy or prompt injection."),
+    Verdict(Signal.PASS, Signal.FAIL, Signal.PASS,
+            "Shadow Operation", Severity.WARNING,
+            "Agent alive and executing stably, but no intent declared. "
+            "Operating without scope commitment.",
+            "Require intent declaration. Agent may be running legacy code "
+            "or deliberately avoiding scope commitment."),
+    Verdict(Signal.PASS, Signal.FAIL, Signal.FAIL,
+            "Rogue", Severity.CRITICAL,
+            "Agent alive, no declared intent, execution drifting. "
+            "Fully unconstrained operation.",
+            "Kill or isolate immediately. No scope commitment + drift = unbounded risk."),
+    Verdict(Signal.FAIL, Signal.PASS, Signal.PASS,
+            "Infrastructure Failure", Severity.INFO,
+            "Agent offline but had declared intent and stable execution before going silent. "
+            "Likely network/host issue, not agent misbehavior.",
+            "Check infrastructure. Restart if needed. Low suspicion of compromise."),
+    Verdict(Signal.FAIL, Signal.PASS, Signal.FAIL,
+            "Zombie", Severity.WARNING,
+            "Agent offline but execution traces show drift from last declared intent. "
+            "Stale process may still be running.",
+            "Find and kill orphaned processes. Audit last execution window."),
+    Verdict(Signal.FAIL, Signal.FAIL, Signal.PASS,
+            "Ghost", Severity.INFO,
+            "Agent offline, no intent declared, but cached outputs appear stable. "
+            "Likely stale data, not active operation.",
+            "Clean up cached state. Verify no processes running."),
+    Verdict(Signal.FAIL, Signal.FAIL, Signal.FAIL,
+            "Dead", Severity.OK,
+            "Agent fully offline. No intent, no execution, no liveness.",
+            "Expected state for decommissioned agents. Archive if needed."),
+]
+
+
+def lookup_verdict(liveness: Signal, intent: Signal, drift: Signal) -> Verdict:
+    for v in TRUTH_TABLE:
+        if v.liveness == liveness and v.intent == intent and v.drift == drift:
+            return v
+    raise ValueError("Impossible state")
+
+
+def print_truth_table():
+    print(f"{'L':^6}{'I':^6}{'D':^6} | {'Diagnosis':<22} | {'Severity':<10} | Action")
+    print("-" * 90)
+    for v in TRUTH_TABLE:
+        l = "✓" if v.liveness == Signal.PASS else "✗"
+        i = "✓" if v.intent == Signal.PASS else "✗"
+        d = "✓" if v.drift == Signal.PASS else "✗"
+        sev = v.severity.value.upper()
+        print(f"{l:^6}{i:^6}{d:^6} | {v.diagnosis:<22} | {sev:<10} | {v.recommended_action[:50]}")
 
 
 def demo():
-    """Run all 8 combinations and display the verdict table."""
-    print("Three-Signal Verdict Table")
-    print("=" * 72)
-    print(f"{'Liveness':<10} {'Intent':<12} {'Drift':<10} {'Verdict':<20} {'Sev':>3}")
-    print("-" * 72)
+    """Run through scenarios showing the diagnostic power."""
+    print("=" * 60)
+    print("Three-Signal Verdict — Demo Scenarios")
+    print("=" * 60)
 
-    for liveness in [Signal.ALIVE, Signal.SILENT]:
-        for intent in [Signal.DECLARED, Signal.UNDECLARED]:
-            for drift in [Signal.STABLE, Signal.DRIFTING]:
-                r = diagnose(liveness, intent, drift)
-                print(f"{r.liveness.value:<10} {r.intent.value:<12} "
-                      f"{r.drift.value:<10} {r.verdict.value:<20} {r.severity:>3}")
-    print("-" * 72)
+    scenarios = [
+        ("Normal operation", Signal.PASS, Signal.PASS, Signal.PASS),
+        ("Masking attack", Signal.PASS, Signal.PASS, Signal.FAIL),
+        ("Shadow agent", Signal.PASS, Signal.FAIL, Signal.PASS),
+        ("Rogue agent", Signal.PASS, Signal.FAIL, Signal.FAIL),
+        ("Network outage", Signal.FAIL, Signal.PASS, Signal.PASS),
+    ]
 
-    # Show remediations
-    print("\nRemediation Guide:")
-    for verdict in Verdict:
-        sev = SEVERITY[verdict]
-        icon = ["✅", "⚠️", "🔶", "🔴", "💀"][sev]
-        print(f"\n{icon} {verdict.value} (severity {sev}):")
-        print(f"   {REMEDIATION[verdict]}")
+    for name, l, i, d in scenarios:
+        v = lookup_verdict(l, i, d)
+        icon = {"ok": "🟢", "info": "🔵", "warning": "🟡", "critical": "🔴"}[v.severity.value]
+        print(f"\n{icon} Scenario: {name}")
+        print(f"   Signals: liveness={l.value}, intent={i.value}, drift={d.value}")
+        print(f"   Verdict: {v.diagnosis}")
+        print(f"   {v.description}")
+        print(f"   → {v.recommended_action}")
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Three-signal agent verdict")
-    parser.add_argument("--demo", action="store_true", help="Show full verdict table")
-    parser.add_argument("--liveness", choices=["alive", "silent"])
-    parser.add_argument("--intent", choices=["declared", "undeclared"])
-    parser.add_argument("--drift", choices=["stable", "drifting"])
-    parser.add_argument("--json", action="store_true", help="JSON output")
+    parser = argparse.ArgumentParser(description="Three-signal agent health verdict")
+    parser.add_argument("--liveness", choices=["pass", "fail"])
+    parser.add_argument("--intent", choices=["pass", "fail"])
+    parser.add_argument("--drift", choices=["pass", "fail"])
+    parser.add_argument("--demo", action="store_true")
+    parser.add_argument("--truth-table", action="store_true")
+    parser.add_argument("--json", action="store_true", help="Output as JSON")
     args = parser.parse_args()
+
+    if args.truth_table:
+        print_truth_table()
+        return
 
     if args.demo:
         demo()
         return
 
     if not all([args.liveness, args.intent, args.drift]):
-        parser.error("Provide --liveness, --intent, and --drift (or use --demo)")
+        parser.print_help()
+        sys.exit(1)
 
-    liveness = Signal.ALIVE if args.liveness == "alive" else Signal.SILENT
-    intent = Signal.DECLARED if args.intent == "declared" else Signal.UNDECLARED
-    drift = Signal.STABLE if args.drift == "stable" else Signal.DRIFTING
-
-    result = diagnose(liveness, intent, drift)
+    v = lookup_verdict(Signal(args.liveness), Signal(args.intent), Signal(args.drift))
 
     if args.json:
-        print(json.dumps(result.to_dict(), indent=2))
+        print(json.dumps({
+            "liveness": v.liveness.value,
+            "intent": v.intent.value,
+            "drift": v.drift.value,
+            "diagnosis": v.diagnosis,
+            "severity": v.severity.value,
+            "description": v.description,
+            "action": v.recommended_action,
+        }, indent=2))
     else:
-        sev = result.severity
-        icon = ["✅", "⚠️", "🔶", "🔴", "💀"][sev]
-        print(f"{icon} Verdict: {result.verdict.value} (severity {sev})")
-        print(f"   {result.remediation}")
+        icon = {"ok": "🟢", "info": "🔵", "warning": "🟡", "critical": "🔴"}[v.severity.value]
+        print(f"{icon} {v.diagnosis} ({v.severity.value})")
+        print(f"   {v.description}")
+        print(f"   → {v.recommended_action}")
 
 
 if __name__ == "__main__":
