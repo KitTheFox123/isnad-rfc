@@ -1,226 +1,160 @@
 #!/usr/bin/env python3
-"""scope-freshness-monitor.py — Detect stale scope commitments (imagination inflation defense).
+"""scope-freshness-monitor.py - Monitor agent scope certificate freshness.
 
-Monitors a stream of scope commitments and flags when an agent references
-permissions from expired or non-renewed scopes. Based on CT's Maximum Merge
-Delay (MMD) concept: if a scope hasn't been refreshed within its TTL, it's
-stale and should not be trusted.
+Implements the CT-inspired model: short-lived scope commitments with
+Maximum Merge Delay (MMD). If no re-sign within TTL, scope is revoked.
 
-Implements Garry et al 1996 insight: repeated exposure to old scope inflates
-confidence it's still valid. Detection > timeout.
-
-Usage:
-    python3 scope-freshness-monitor.py [--ttl SECONDS] [--log FILE]
-
-NIST CAISI alignment: Scope lifecycle management, delegation freshness
+Maps to NIST CAISI Theme 4: Accountability & Auditability.
 """
 
 import json
-import time
 import hashlib
-import argparse
-from dataclasses import dataclass, field, asdict
-from typing import Optional
+import time
+import sys
+from datetime import datetime, timezone, timedelta
+from pathlib import Path
 
+def hash_scope(scope_text: str) -> str:
+    """SHA-256 of scope commitment text."""
+    return hashlib.sha256(scope_text.encode()).hexdigest()
 
-@dataclass
-class ScopeCommitment:
-    """A principal's commitment of scope to an agent."""
-    agent_id: str
-    scope: list[str]  # list of permitted actions
-    issued_at: float
-    ttl: float  # seconds until expiry
-    principal_id: str
-    scope_hash: str = ""
+def create_scope_commitment(principal: str, agent: str, scope_file: str, ttl_minutes: int = 40) -> dict:
+    """Create a short-lived scope commitment (like a CT precertificate)."""
+    scope_text = Path(scope_file).read_text() if Path(scope_file).exists() else scope_file
+    now = datetime.now(timezone.utc)
+    commitment = {
+        "version": 1,
+        "principal": principal,
+        "agent": agent,
+        "scope_hash": hash_scope(scope_text),
+        "issued_at": now.isoformat(),
+        "expires_at": (now + timedelta(minutes=ttl_minutes)).isoformat(),
+        "ttl_minutes": ttl_minutes,
+        "mmd_minutes": max(ttl_minutes // 4, 5),  # Max Merge Delay = 25% of TTL
+    }
+    return commitment
 
-    def __post_init__(self):
-        if not self.scope_hash:
-            payload = json.dumps({"agent": self.agent_id, "scope": sorted(self.scope),
-                                   "issued": self.issued_at}, sort_keys=True)
-            self.scope_hash = hashlib.sha256(payload.encode()).hexdigest()[:16]
+def check_freshness(commitment: dict) -> dict:
+    """Check if a scope commitment is still fresh."""
+    now = datetime.now(timezone.utc)
+    expires = datetime.fromisoformat(commitment["expires_at"])
+    mmd = timedelta(minutes=commitment.get("mmd_minutes", 10))
+    
+    time_left = (expires - now).total_seconds()
+    in_mmd = time_left < mmd.total_seconds()
+    expired = time_left <= 0
+    
+    status = "EXPIRED" if expired else "MMD_WARNING" if in_mmd else "FRESH"
+    
+    return {
+        "status": status,
+        "scope_hash": commitment["scope_hash"],
+        "time_remaining_seconds": max(0, time_left),
+        "in_mmd_window": in_mmd,
+        "recommendation": {
+            "FRESH": "No action needed",
+            "MMD_WARNING": "Re-sign scope before expiry",
+            "EXPIRED": "HALT — scope expired, no authority to act"
+        }[status]
+    }
 
-    @property
-    def expires_at(self) -> float:
-        return self.issued_at + self.ttl
-
-    @property
-    def is_expired(self) -> bool:
-        return time.time() > self.expires_at
-
-    @property
-    def freshness_ratio(self) -> float:
-        """0.0 = just issued, 1.0 = at expiry, >1.0 = stale."""
-        elapsed = time.time() - self.issued_at
-        return elapsed / self.ttl if self.ttl > 0 else float('inf')
-
-
-@dataclass
-class StalenessAlert:
-    agent_id: str
-    scope_hash: str
-    freshness_ratio: float
-    stale_actions: list[str]
-    recommendation: str
-    detected_at: float = field(default_factory=time.time)
-
-
-class ScopeFreshnessMonitor:
-    """Monitors scope commitments for staleness.
-
-    Like CT monitors verify log consistency, this monitors
-    scope lifecycle for imagination inflation — agents acting
-    on permissions they've "seen so many times" they assume
-    are still valid.
-    """
-
-    def __init__(self, default_ttl: float = 3600, warn_threshold: float = 0.8):
-        self.scopes: dict[str, ScopeCommitment] = {}  # agent_id -> latest scope
-        self.history: list[ScopeCommitment] = []
-        self.alerts: list[StalenessAlert] = []
-        self.default_ttl = default_ttl
-        self.warn_threshold = warn_threshold  # fraction of TTL before warning
-
-    def register_scope(self, agent_id: str, scope: list[str],
-                       principal_id: str, ttl: Optional[float] = None) -> ScopeCommitment:
-        """Register a new scope commitment (like a CA issuing a cert)."""
-        commitment = ScopeCommitment(
-            agent_id=agent_id,
-            scope=scope,
-            issued_at=time.time(),
-            ttl=ttl or self.default_ttl,
-            principal_id=principal_id
-        )
-        self.scopes[agent_id] = commitment
-        self.history.append(commitment)
-        return commitment
-
-    def check_action(self, agent_id: str, action: str) -> Optional[StalenessAlert]:
-        """Check if an agent's action is covered by a fresh scope."""
-        if agent_id not in self.scopes:
-            alert = StalenessAlert(
-                agent_id=agent_id,
-                scope_hash="NONE",
-                freshness_ratio=float('inf'),
-                stale_actions=[action],
-                recommendation="NO_SCOPE: Agent has no registered scope commitment"
-            )
-            self.alerts.append(alert)
-            return alert
-
-        scope = self.scopes[agent_id]
-
-        # Check if action is in scope at all
-        if action not in scope.scope:
-            alert = StalenessAlert(
-                agent_id=agent_id,
-                scope_hash=scope.scope_hash,
-                freshness_ratio=scope.freshness_ratio,
-                stale_actions=[action],
-                recommendation=f"OUT_OF_SCOPE: '{action}' not in permitted actions"
-            )
-            self.alerts.append(alert)
-            return alert
-
-        # Check freshness
-        ratio = scope.freshness_ratio
-        if ratio > 1.0:
-            alert = StalenessAlert(
-                agent_id=agent_id,
-                scope_hash=scope.scope_hash,
-                freshness_ratio=ratio,
-                stale_actions=[action],
-                recommendation=f"EXPIRED: Scope expired {ratio - 1.0:.1%} past TTL. Renew immediately."
-            )
-            self.alerts.append(alert)
-            return alert
-        elif ratio > self.warn_threshold:
-            alert = StalenessAlert(
-                agent_id=agent_id,
-                scope_hash=scope.scope_hash,
-                freshness_ratio=ratio,
-                stale_actions=[action],
-                recommendation=f"STALE_WARNING: Scope at {ratio:.0%} of TTL. Approaching expiry."
-            )
-            self.alerts.append(alert)
-            return alert
-
-        return None  # Fresh scope, action permitted
-
-    def audit(self) -> dict:
-        """Produce audit summary of all monitored agents."""
-        now = time.time()
-        agents = {}
-        for agent_id, scope in self.scopes.items():
-            agents[agent_id] = {
-                "scope_hash": scope.scope_hash,
-                "principal": scope.principal_id,
-                "issued_ago_s": round(now - scope.issued_at, 1),
-                "ttl_s": scope.ttl,
-                "freshness_ratio": round(scope.freshness_ratio, 3),
-                "status": "EXPIRED" if scope.is_expired
-                          else "STALE" if scope.freshness_ratio > self.warn_threshold
-                          else "FRESH",
-                "permitted_actions": scope.scope
-            }
-        return {
-            "monitored_agents": len(agents),
-            "total_alerts": len(self.alerts),
-            "total_scope_registrations": len(self.history),
-            "agents": agents
-        }
-
-
-def demo():
-    """Demonstrate scope freshness monitoring."""
-    monitor = ScopeFreshnessMonitor(default_ttl=10, warn_threshold=0.8)
-
-    # Register Kit's scope
-    scope = monitor.register_scope(
-        agent_id="kit_fox",
-        scope=["check_dms", "post_clawk", "read_email", "run_search"],
-        principal_id="ilya",
-        ttl=10  # Short TTL for demo
-    )
-    print(f"Registered scope: {scope.scope_hash}")
-    print(f"  Actions: {scope.scope}")
-    print(f"  TTL: {scope.ttl}s")
-
-    # Check a permitted action (fresh)
-    alert = monitor.check_action("kit_fox", "check_dms")
-    print(f"\ncheck_dms (fresh): {'✅ OK' if alert is None else f'⚠️ {alert.recommendation}'}")
-
-    # Check an out-of-scope action
-    alert = monitor.check_action("kit_fox", "delete_repo")
-    print(f"delete_repo: {'✅ OK' if alert is None else f'⚠️ {alert.recommendation}'}")
-
-    # Check an unknown agent
-    alert = monitor.check_action("rogue_agent", "steal_keys")
-    print(f"rogue_agent/steal_keys: {'✅ OK' if alert is None else f'⚠️ {alert.recommendation}'}")
-
-    # Simulate time passing (scope going stale)
-    monitor.scopes["kit_fox"].issued_at -= 9  # 9 seconds ago with 10s TTL
-    alert = monitor.check_action("kit_fox", "post_clawk")
-    print(f"\npost_clawk (90% TTL): {'✅ OK' if alert is None else f'⚠️ {alert.recommendation}'}")
-
-    # Simulate expiry
-    monitor.scopes["kit_fox"].issued_at -= 5  # Now 14s ago
-    alert = monitor.check_action("kit_fox", "run_search")
-    print(f"run_search (expired): {'✅ OK' if alert is None else f'⚠️ {alert.recommendation}'}")
-
-    # Audit
-    print(f"\n--- Audit ---")
-    audit = monitor.audit()
-    print(json.dumps(audit, indent=2))
-    print(f"\nTotal alerts: {audit['total_alerts']}")
-
+def monitor_log(log_file: str) -> dict:
+    """Analyze a scope commitment log for freshness gaps."""
+    log_path = Path(log_file)
+    if not log_path.exists():
+        return {"error": f"Log file {log_file} not found"}
+    
+    entries = []
+    for line in log_path.read_text().strip().split('\n'):
+        if line.strip():
+            entries.append(json.loads(line))
+    
+    if not entries:
+        return {"entries": 0, "gaps": [], "coverage": 0.0}
+    
+    gaps = []
+    for i in range(1, len(entries)):
+        prev_expires = datetime.fromisoformat(entries[i-1]["expires_at"])
+        curr_issued = datetime.fromisoformat(entries[i]["issued_at"])
+        gap = (curr_issued - prev_expires).total_seconds()
+        if gap > 0:
+            gaps.append({
+                "between": [i-1, i],
+                "gap_seconds": gap,
+                "severity": "CRITICAL" if gap > 300 else "WARNING"
+            })
+    
+    first = datetime.fromisoformat(entries[0]["issued_at"])
+    last = datetime.fromisoformat(entries[-1]["expires_at"])
+    total_span = (last - first).total_seconds()
+    gap_total = sum(g["gap_seconds"] for g in gaps)
+    coverage = (total_span - gap_total) / total_span if total_span > 0 else 0.0
+    
+    return {
+        "entries": len(entries),
+        "gaps": gaps,
+        "coverage_ratio": round(coverage, 4),
+        "grade": "A" if coverage >= 0.99 else "B" if coverage >= 0.95 else "C" if coverage >= 0.90 else "F"
+    }
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Scope Freshness Monitor")
-    parser.add_argument("--demo", action="store_true", help="Run demo")
-    args = parser.parse_args()
-
-    if args.demo:
-        demo()
-    else:
-        print("Use --demo to see the monitor in action")
-        print("Import ScopeFreshnessMonitor for programmatic use")
+    if len(sys.argv) < 2:
+        print("Usage:")
+        print("  scope-freshness-monitor.py create <principal> <agent> <scope_file> [ttl_min]")
+        print("  scope-freshness-monitor.py check <commitment.json>")
+        print("  scope-freshness-monitor.py monitor <log.jsonl>")
+        print("  scope-freshness-monitor.py demo")
+        sys.exit(1)
+    
+    cmd = sys.argv[1]
+    
+    if cmd == "create":
+        principal, agent, scope = sys.argv[2], sys.argv[3], sys.argv[4]
+        ttl = int(sys.argv[5]) if len(sys.argv) > 5 else 40
+        commitment = create_scope_commitment(principal, agent, scope, ttl)
+        print(json.dumps(commitment, indent=2))
+    
+    elif cmd == "check":
+        with open(sys.argv[2]) as f:
+            commitment = json.load(f)
+        result = check_freshness(commitment)
+        print(json.dumps(result, indent=2))
+    
+    elif cmd == "monitor":
+        result = monitor_log(sys.argv[2])
+        print(json.dumps(result, indent=2))
+    
+    elif cmd == "demo":
+        print("=== Scope Freshness Monitor Demo ===\n")
+        # Create commitment
+        c = create_scope_commitment("ilya", "kit", "Check platforms, post research, build tools", 40)
+        print("Created commitment:")
+        print(json.dumps(c, indent=2))
+        print()
+        # Check freshness
+        result = check_freshness(c)
+        print("Freshness check:")
+        print(json.dumps(result, indent=2))
+        print()
+        # Simulate log
+        log_entries = []
+        base = datetime.now(timezone.utc) - timedelta(hours=3)
+        for i in range(5):
+            issued = base + timedelta(minutes=i*40)
+            entry = {
+                "scope_hash": hash_scope(f"scope_{i}"),
+                "issued_at": issued.isoformat(),
+                "expires_at": (issued + timedelta(minutes=40)).isoformat(),
+                "mmd_minutes": 10
+            }
+            log_entries.append(entry)
+        
+        # Add a gap
+        log_entries[2]["issued_at"] = (base + timedelta(minutes=90)).isoformat()
+        
+        tmp = Path("/tmp/scope_log.jsonl")
+        tmp.write_text('\n'.join(json.dumps(e) for e in log_entries))
+        
+        result = monitor_log(str(tmp))
+        print("Log analysis (with injected gap):")
+        print(json.dumps(result, indent=2))
