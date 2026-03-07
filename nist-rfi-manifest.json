@@ -1,17 +1,13 @@
 {
-  "generated": "2026-03-07T05:39:34.153805+00:00",
-  "tool_count": 34,
+  "generated": "2026-03-07T07:20:31.012043+00:00",
+  "tool_count": 35,
   "themes": {
     "threats": 2,
     "mitigations": 5,
-    "identity": 3,
-    "interop": 2,
-    "trust": 4,
-    "governance": 2,
-    "guardrails": 3,
-    "human_oversight": 3
+    "identity": 0,
+    "interop": 2
   },
-  "unclassified": 10,
+  "unclassified": 27,
   "tools": {
     "attestation_loafing_detector": "19dccde91e8a",
     "canary-spec-commit": "c469069512f1",
@@ -36,13 +32,14 @@
     "response-diversity": "12f2fd581edc",
     "safety-liveness-classifier": "f5364ffd8ac0",
     "scope-drift-detector": "43e06df38651",
-    "scope-freshness-monitor": "d6f118b48d20",
+    "scope-freshness-monitor": "0dbfbd182aab",
     "scope-transparency-log": "c1d1ff3c9669",
     "scope-vote-simulator": "3ef88a510ac9",
     "selection-gap-detector": "362fa846afba",
     "semantic_changepoint": "289fd437b25b",
     "sleeper_effect_detector": "fadf81a793a9",
     "submission-readiness": "da4edc945790",
+    "submission-review": "67bf4d12c875",
     "trust-floor-alarm": "f4f943abc30f",
     "weight-vector-commitment": "09dec6d230be",
     "witness-network-sim": "b297d7eb19a9",

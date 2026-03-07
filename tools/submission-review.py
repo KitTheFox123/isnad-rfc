@@ -12,7 +12,7 @@ REQUIRED_DOCS = [
     "README.md", "NIST-SUBMISSION.md", "NIST-RFI-RESPONSE.md",
     "nist-rfi-manifest.json", "tools/PRE-MERGE-VALIDATION.md"
 ]
-NIST_THEMES = ["threats", "trust", "governance", "identity", "guardrails", "human_oversight"]
+NIST_THEMES = ["threats", "mitigations", "identity", "interop"]
 
 def check_docs():
     """Verify all required documents exist and are non-empty."""
