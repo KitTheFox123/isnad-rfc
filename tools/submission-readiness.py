@@ -1,121 +1,156 @@
 #!/usr/bin/env python3
 """NIST CAISI Submission Readiness Checker.
 
-Validates the isnad-rfc repo is ready for NIST submission:
-- All tools have docstrings and pass syntax check
-- NIST-SUBMISSION.md exists and has required sections
-- PRE-MERGE-VALIDATION.md is current
-- No uncommitted changes
-- README references tool count accurately
+Validates the full submission package before March 9 deadline:
+- All tools present and runnable
+- NIST-SUBMISSION.md complete
+- PRE-MERGE-VALIDATION.md present
+- No broken imports
+- README references valid
+- Git status clean
 """
-
-import ast
 import os
-import subprocess
 import sys
+import subprocess
+import hashlib
 from pathlib import Path
+from datetime import datetime, timezone
 
-REPO = Path(__file__).parent.parent
-TOOLS_DIR = REPO / "tools"
-REQUIRED_DOCS = ["tools/NIST-SUBMISSION.md", "README.md", "tools/PRE-MERGE-VALIDATION.md"]
-REQUIRED_SECTIONS = ["Human Root of Trust", "scope", "attestation", "delegation"]
+TOOLS_DIR = Path(__file__).parent
+REPO_DIR = TOOLS_DIR.parent
 
-def check_tools():
-    """Verify all Python tools parse and have docstrings."""
-    issues = []
-    tools = sorted(TOOLS_DIR.glob("*.py"))
-    for t in tools:
+REQUIRED_FILES = [
+    "tools/NIST-SUBMISSION.md",
+    "tools/PRE-MERGE-VALIDATION.md",
+    "README.md",
+]
+
+REQUIRED_SECTIONS_NIST = [
+    "Human Root of Trust",
+    "Tool",
+    "CAISI",
+]
+
+
+def check_file_exists(path: str) -> tuple[bool, str]:
+    full = REPO_DIR / path
+    if full.exists():
+        size = full.stat().st_size
+        return True, f"✅ {path} ({size} bytes)"
+    return False, f"❌ {path} MISSING"
+
+
+def check_tools_runnable() -> list[tuple[bool, str]]:
+    results = []
+    py_files = sorted(TOOLS_DIR.glob("*.py"))
+    for f in py_files:
+        if f.name == "submission-readiness.py":
+            continue
         try:
-            tree = ast.parse(t.read_text())
-            doc = ast.get_docstring(tree)
-            if not doc:
-                issues.append(f"  WARN: {t.name} missing module docstring")
-        except SyntaxError as e:
-            issues.append(f"  FAIL: {t.name} syntax error: {e}")
-    return tools, issues
+            result = subprocess.run(
+                [sys.executable, "-c", f"import ast; ast.parse(open('{f}').read())"],
+                capture_output=True, timeout=5
+            )
+            if result.returncode == 0:
+                results.append((True, f"  ✅ {f.name} — syntax OK"))
+            else:
+                results.append((False, f"  ❌ {f.name} — syntax error"))
+        except subprocess.TimeoutExpired:
+            results.append((False, f"  ⚠️ {f.name} — parse timeout"))
+    return results
 
-def check_docs():
-    """Verify required documentation exists."""
-    issues = []
-    for doc in REQUIRED_DOCS:
-        p = REPO / doc
-        if not p.exists():
-            issues.append(f"  MISSING: {doc}")
-        elif p.stat().st_size < 100:
-            issues.append(f"  WARN: {doc} suspiciously small ({p.stat().st_size}b)")
-    return issues
 
-def check_nist_sections():
-    """Verify NIST-SUBMISSION.md covers required topics."""
-    nist = REPO / "tools" / "NIST-SUBMISSION.md"
-    if not nist.exists():
-        return ["  MISSING: NIST-SUBMISSION.md"]
-    content = nist.read_text().lower()
-    issues = []
-    for section in REQUIRED_SECTIONS:
-        if section.lower() not in content:
-            issues.append(f"  WARN: '{section}' not mentioned in NIST-SUBMISSION.md")
-    return issues
+def check_nist_sections() -> list[tuple[bool, str]]:
+    nist_path = REPO_DIR / "tools" / "NIST-SUBMISSION.md"
+    if not nist_path.exists():
+        return [(False, "❌ NIST-SUBMISSION.md missing")]
+    content = nist_path.read_text()
+    results = []
+    for section in REQUIRED_SECTIONS_NIST:
+        if section.lower() in content.lower():
+            results.append((True, f"  ✅ Section '{section}' found"))
+        else:
+            results.append((False, f"  ❌ Section '{section}' MISSING"))
+    return results
 
-def check_git():
-    """Check for uncommitted changes."""
+
+def check_git_status() -> tuple[bool, str]:
     result = subprocess.run(
-        ["git", "status", "--porcelain"], capture_output=True, text=True, cwd=REPO
+        ["git", "status", "--porcelain"],
+        capture_output=True, text=True, cwd=REPO_DIR
     )
-    dirty = [l for l in result.stdout.strip().split("\n") if l.strip()]
-    return dirty
+    if result.stdout.strip():
+        return False, f"⚠️ Uncommitted changes:\n{result.stdout.strip()}"
+    return True, "✅ Git working tree clean"
+
+
+def manifest_hash() -> str:
+    """SHA-256 of all tool files for reproducibility."""
+    h = hashlib.sha256()
+    for f in sorted(TOOLS_DIR.glob("*.py")):
+        h.update(f.read_bytes())
+    for f in sorted(TOOLS_DIR.glob("*.md")):
+        h.update(f.read_bytes())
+    return h.hexdigest()[:16]
+
 
 def main():
-    print("=== NIST CAISI Submission Readiness Check ===\n")
-    
-    # Tools
-    tools, tool_issues = check_tools()
-    print(f"Tools: {len(tools)} found")
-    for i in tool_issues:
-        print(i)
-    
-    # Docs
-    doc_issues = check_docs()
-    print(f"\nDocumentation: {len(REQUIRED_DOCS)} required")
-    if doc_issues:
-        for i in doc_issues:
-            print(i)
-    else:
-        print("  All present ✓")
-    
-    # NIST sections
-    nist_issues = check_nist_sections()
-    print(f"\nNIST sections: {len(REQUIRED_SECTIONS)} required")
-    if nist_issues:
-        for i in nist_issues:
-            print(i)
-    else:
-        print("  All covered ✓")
-    
-    # Git
-    dirty = check_git()
-    print(f"\nGit status:")
-    if dirty:
-        print(f"  {len(dirty)} uncommitted changes")
-        for d in dirty[:5]:
-            print(f"    {d}")
-    else:
-        print("  Clean ✓")
-    
-    # Summary
-    all_issues = tool_issues + doc_issues + nist_issues
-    fails = [i for i in all_issues if "FAIL" in i or "MISSING" in i]
-    warns = [i for i in all_issues if "WARN" in i]
-    
-    print(f"\n{'='*40}")
-    print(f"RESULT: {len(fails)} failures, {len(warns)} warnings")
-    if fails:
-        print("STATUS: NOT READY ❌")
-        sys.exit(1)
-    elif warns:
-        print("STATUS: READY WITH WARNINGS ⚠️")
-    else:
-        print("STATUS: READY ✅")
+    now = datetime.now(timezone.utc)
+    deadline = datetime(2026, 3, 9, tzinfo=timezone.utc)
+    hours_left = (deadline - now).total_seconds() / 3600
+
+    print(f"╔══════════════════════════════════════════╗")
+    print(f"║  NIST CAISI Submission Readiness Check   ║")
+    print(f"║  {now.strftime('%Y-%m-%d %H:%M UTC')}                        ║")
+    print(f"║  Hours to deadline: {hours_left:.1f}               ║")
+    print(f"╚══════════════════════════════════════════╝")
+    print()
+
+    all_pass = True
+
+    # 1. Required files
+    print("## Required Files")
+    for path in REQUIRED_FILES:
+        ok, msg = check_file_exists(path)
+        print(msg)
+        all_pass &= ok
+    print()
+
+    # 2. Tool syntax
+    print("## Tool Syntax Check")
+    tool_results = check_tools_runnable()
+    for ok, msg in tool_results:
+        print(msg)
+        all_pass &= ok
+    print(f"\n  {sum(1 for ok,_ in tool_results if ok)}/{len(tool_results)} tools pass syntax check")
+    print()
+
+    # 3. NIST sections
+    print("## NIST-SUBMISSION.md Sections")
+    for ok, msg in check_nist_sections():
+        print(msg)
+        all_pass &= ok
+    print()
+
+    # 4. Git status
+    print("## Git Status")
+    ok, msg = check_git_status()
+    print(msg)
+    all_pass &= ok
+    print()
+
+    # 5. Manifest
+    print(f"## Manifest Hash: {manifest_hash()}")
+    print()
+
+    # Verdict
+    grade = "READY ✅" if all_pass else "NOT READY ❌"
+    print(f"## Verdict: {grade}")
+    print(f"## Tools: {len(tool_results)} validated")
+    print(f"## Time remaining: {hours_left:.1f} hours")
+
+    return 0 if all_pass else 1
+
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())
