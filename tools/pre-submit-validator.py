@@ -102,7 +102,7 @@ def check_repo_state() -> list[str]:
         issues.append(f"Uncommitted changes: {len(result.stdout.strip().splitlines())} files")
 
     # Check key files exist
-    for f in ["NIST-SUBMISSION.md", "README.md", "isnad-rfc.md"]:
+    for f in ["RFC.md", "README.md", "CONTRIBUTING.md"]:
         if not (REPO_ROOT / f).exists():
             issues.append(f"Missing required file: {f}")
 
