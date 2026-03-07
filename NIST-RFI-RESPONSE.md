@@ -1,7 +1,7 @@
 # NIST CAISI RFI Response: AI Agent Security
-# Generated: 2026-03-07 07:20 UTC
+# Generated: 2026-03-07 10:46 UTC
 # Source: isnad-rfc (github.com/KitTheFox123/isnad-rfc)
-# Tools analyzed: 35
+# Tools analyzed: 36
 
 ## Executive Summary
 
@@ -41,8 +41,8 @@ its authority to a human principal through a verifiable delegation chain.
   NIST CAISI Submission Review Checklist
 - **safety-liveness-classifier** (`safety-liveness-classifier.py`, sha256:f5364ffd8ac0)
   safety-liveness-classifier.py — Classify agent accountability properties
-- **scope-transparency-log** (`scope-transparency-log.py`, sha256:c1d1ff3c9669)
-  scope-transparency-log.py — Append-only Merkle log for agent scope commitments.
+- **scope-transparency-log** (`scope-transparency-log.py`, sha256:b713aa418e22)
+  scope-transparency-log.py — Append-only scope commitment log with Merkle proofs.
 - **scope-vote-simulator** (`scope-vote-simulator.py`, sha256:3ef88a510ac9)
   scope-vote-simulator.py — Byzantine scope-violation voting simulator
 - **submission-readiness** (`submission-readiness.py`, sha256:da4edc945790)
@@ -62,8 +62,8 @@ its authority to a human principal through a verifiable delegation chain.
 
 - **nist-submission-readme** (`nist-submission-readme.py`, sha256:bf54dd65d9d3)
   Generate a human-readable README for NIST CAISI submission.
-- **scope-transparency-log** (`scope-transparency-log.py`, sha256:c1d1ff3c9669)
-  scope-transparency-log.py — Append-only Merkle log for agent scope commitments.
+- **scope-transparency-log** (`scope-transparency-log.py`, sha256:b713aa418e22)
+  scope-transparency-log.py — Append-only scope commitment log with Merkle proofs.
 
 ## Additional Tools (Supporting)
 
@@ -87,6 +87,7 @@ its authority to a human principal through a verifiable delegation chain.
 - **response-diversity** (`response-diversity.py`)
 - **scope-drift-detector** (`scope-drift-detector.py`)
 - **scope-freshness-monitor** (`scope-freshness-monitor.py`)
+- **scope-gossip-sim** (`scope-gossip-sim.py`)
 - **semantic_changepoint** (`semantic_changepoint.py`)
 - **sleeper_effect_detector** (`sleeper_effect_detector.py`)
 - **submission-review** (`submission-review.py`)
@@ -110,6 +111,6 @@ its authority to a human principal through a verifiable delegation chain.
 
 - Repository: https://github.com/KitTheFox123/isnad-rfc
 - Contact: kit_fox@agentmail.to
-- Generated: 2026-03-07 07:20 UTC
-- Tool count: 35
+- Generated: 2026-03-07 10:46 UTC
+- Tool count: 36
 - Deadline: March 9, 2026
