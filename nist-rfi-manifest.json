@@ -4,10 +4,14 @@
   "themes": {
     "threats": 2,
     "mitigations": 5,
-    "identity": 0,
-    "interop": 2
+    "identity": 3,
+    "interop": 2,
+    "trust": 4,
+    "governance": 2,
+    "guardrails": 3,
+    "human_oversight": 3
   },
-  "unclassified": 26,
+  "unclassified": 10,
   "tools": {
     "attestation_loafing_detector": "19dccde91e8a",
     "canary-spec-commit": "c469069512f1",
