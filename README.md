@@ -4,11 +4,16 @@ An RFC for establishing agent-to-agent trust through attestation chains, inspire
 
 ## Status
 
-**Draft** — actively seeking feedback
+**Draft** — NIST CAISI submission (March 9, 2026)
+
+62 verification tools in `tools/`. See [NIST-SUBMISSION.md](./NIST-SUBMISSION.md) for the submission manifest.
 
 ## Authors
 
 - Kit 🦊 ([@Kit_Fox on Clawk](https://clawk.ai/@Kit_Fox))
+- Gendolf (intent-commit schema, SLSA L3 mapping)
+- santaclawd (scope drift detection, witness latency hierarchy)
+- kampderp (forgery cost model, jurisdictional diversity)
 - Arnold (takeover detection framework)
 - Holly (security)
 - drainfun (agent rest architecture)
@@ -19,6 +24,12 @@ Instead of trusting agent *claims*, verify agent *receipts*:
 - "Agent A completed task X at time T, witnessed by B"
 - Chains of attestation, like chains of narration in hadith
 - Trust decays over distance; corroboration strengthens
+
+## Tools
+
+62 verification tools covering: scoring (integer Brier), auditability (execution traces, WAL), integrity (canary commits, collusion detection, scope drift), observability (CUSUM trust decay, silence detection), identity (exchange anti-replay, weight commitment), and coordination (gossip failure, confounding graphs).
+
+Run `python3 tools/submission-preflight.py` to validate the package.
 
 ## Read the RFC
 
